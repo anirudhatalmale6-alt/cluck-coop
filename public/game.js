@@ -25,20 +25,26 @@ function switchTab(mode) {
   document.getElementById('tabLogin').classList.toggle('active', mode === 'login');
   document.getElementById('tabReg').classList.toggle('active', mode === 'register');
   document.getElementById('authErr').textContent = '';
+  // Referral code only makes sense when signing up.
+  document.getElementById('refCode').style.display = (mode === 'register') ? '' : 'none';
 }
 
 async function doAuth() {
   const username = document.getElementById('uname').value.trim();
   const password = document.getElementById('pass').value;
+  const refCode = document.getElementById('refCode').value.trim();
   const errEl = document.getElementById('authErr');
   errEl.textContent = '';
   try {
-    const data = await api(authMode, { username, password });
+    const body = { username, password };
+    if (authMode === 'register' && refCode) body.refCode = refCode;
+    const data = await api(authMode, body);
     TOKEN = data.token;
     localStorage.setItem('cc_token', TOKEN);
     STATE = data.state;
     document.getElementById('auth').style.display = 'none';
     render();
+    if (data.referralApplied) setTimeout(() => toast('🎁 Referral bonus added!'), 400);
   } catch (e) {
     errEl.textContent = e.message;
   }
@@ -100,9 +106,14 @@ function render() {
   STATE.chickens.forEach((c) => {
     const el = document.createElement('div');
     el.className = 'coop' + (c.pending > 0 ? ' ready' : '');
+    const nestEggs = c.pending > 0 ? `<div class="eggs">${c.eggEmoji.repeat(Math.min(c.pending, 4))}</div>` : '';
     el.innerHTML = `
       ${c.pending > 0 ? `<div class="eggbadge">${c.eggEmoji} ${c.pending}</div>` : ''}
-      <div class="chick">${c.emoji}</div>
+      <div class="roof"></div>
+      <div class="house">
+        <div class="chick">${c.emoji}</div>
+        <div class="nest">${nestEggs}</div>
+      </div>
       <div class="cname">${c.name}</div>
       <div class="timer" data-next="${c.nextEggMs}" data-full="${c.full}">${c.full ? 'Full!' : clock(c.nextEggMs)}</div>
     `;
@@ -112,7 +123,7 @@ function render() {
   for (let i = STATE.usedSlots; i < STATE.slots; i++) {
     const el = document.createElement('div');
     el.className = 'coop empty';
-    el.innerHTML = `<div class="plus">+</div><div class="lbl">Add Chicken</div>`;
+    el.innerHTML = `<div class="plot"><div class="plus">+</div><div class="lbl">Add Chicken</div></div>`;
     el.onclick = () => openSheet('shop');
     grid.appendChild(el);
   }
@@ -186,6 +197,19 @@ async function buyCoins(packId) {
   } catch (e) { toast(e.message); }
 }
 
+function shareRef(code) {
+  if (!code) return;
+  const link = location.origin + location.pathname.replace(/[^/]*$/, '');
+  const msg = `🐔 Come raise chickens with me on Cluck Coop! Use my referral code ${code} when you sign up and we both get free coins. ${link}`;
+  if (navigator.share) {
+    navigator.share({ title: 'Cluck Coop', text: msg }).catch(() => {});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(msg).then(() => toast('📋 Invite copied!')).catch(() => toast('Your code: ' + code));
+  } else {
+    toast('Your code: ' + code);
+  }
+}
+
 // ---------- Navigation ----------
 function showFarm() {
   closeSheet();
@@ -256,6 +280,29 @@ function renderSheet(which) {
     });
     if (!any) html += `<p style="text-align:center;color:#a8905c;padding:24px 0">Your basket is empty.<br>Collect eggs from your chickens first! 🧺</p>`;
     else html += `<div style="margin-top:14px"><button class="buybtn" style="width:100%;padding:14px" onclick="sellEggs()">💰 Sell Everything</button></div>`;
+  }
+
+  else if (which === 'invite') {
+    const r = STATE.referral || {};
+    html += `<h2>🎁 Invite Friends</h2>
+      <p style="text-align:center;color:#8a7550;font-size:13px;margin-bottom:12px">
+        Share your code. When a friend signs up with it, you get 🪙 ${fmt(r.rewardReferrer)} and they get 🪙 ${fmt(r.rewardNew)}!
+      </p>
+      <div style="background:#fff;border-radius:16px;padding:16px;box-shadow:0 3px 0 var(--shadow);text-align:center">
+        <div style="font-size:12px;color:#8a7550;font-weight:700">YOUR REFERRAL CODE</div>
+        <div style="font-size:30px;font-weight:800;letter-spacing:3px;color:#8a5624;margin:6px 0;font-family:monospace">${r.code || '—'}</div>
+        <button class="buybtn" style="width:100%;padding:12px" onclick="shareRef('${r.code || ''}')">📤 Share / Copy Code</button>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px">
+        <div style="flex:1;background:#fff;border-radius:14px;padding:14px;text-align:center;box-shadow:0 3px 0 var(--shadow)">
+          <div style="font-size:24px;font-weight:800;color:#42a91f">${r.count || 0}</div>
+          <div style="font-size:11px;color:#8a7550;font-weight:700">Friends Joined</div>
+        </div>
+        <div style="flex:1;background:#fff;border-radius:14px;padding:14px;text-align:center;box-shadow:0 3px 0 var(--shadow)">
+          <div style="font-size:24px;font-weight:800;color:#b8860b">${fmt(r.earned || 0)}</div>
+          <div style="font-size:11px;color:#8a7550;font-weight:700">Coins Earned</div>
+        </div>
+      </div>`;
   }
 
   else if (which === 'coins') {

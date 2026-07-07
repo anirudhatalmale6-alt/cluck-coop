@@ -71,24 +71,50 @@
     border-radius: 999px; min-width: 22px; height: 22px; font-size: 12px; line-height: 22px;
     padding: 0 6px; font-weight: 800; box-shadow: 0 2px 0 rgba(0,0,0,.2);
   }
-  .coop-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-  .coop {
-    background: var(--card); border-radius: 18px; padding: 10px 6px 8px; text-align: center;
-    box-shadow: 0 4px 0 var(--shadow); position: relative; min-height: 104px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  .coop-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .coop { position: relative; display: flex; flex-direction: column; align-items: stretch; }
+  /* peaked roof */
+  .coop .roof {
+    height: 22px; margin: 0 -3px -1px; z-index: 1;
+    background: linear-gradient(180deg, #cf6038, #9c3f1e);
+    clip-path: polygon(50% 0, 100% 100%, 0 100%);
+    filter: drop-shadow(0 2px 0 rgba(0,0,0,.12));
   }
-  .coop .chick { font-size: 40px; line-height: 1; animation: bob 2.4s ease-in-out infinite; }
-  @keyframes bob { 0%,100%{ transform: translateY(0);} 50%{ transform: translateY(-5px);} }
-  .coop .cname { font-size: 11px; font-weight: 700; color: #7a6338; margin-top: 2px; }
-  .coop .timer { font-size: 10px; color: #9a8863; margin-top: 1px; font-variant-numeric: tabular-nums; }
+  /* wooden hen house body with faint plank lines */
+  .coop .house {
+    position: relative; padding: 8px 4px 9px; text-align: center;
+    background:
+      repeating-linear-gradient(180deg, rgba(0,0,0,.06) 0 1px, transparent 1px 15px),
+      linear-gradient(180deg, #97632f, #6f4522);
+    border: 2px solid #5e3a1c; border-top: none; border-radius: 0 0 12px 12px;
+    box-shadow: 0 4px 0 var(--shadow);
+  }
+  .coop .chick { position: relative; z-index: 2; font-size: 38px; line-height: 1; display: block; animation: bob 2.6s ease-in-out infinite; }
+  @keyframes bob { 0%,100%{ transform: translateY(0);} 50%{ transform: translateY(-4px);} }
+  /* straw nest the hen sits on */
+  .coop .nest {
+    position: relative; z-index: 2; width: 74%; height: 13px; margin: -6px auto 0;
+    background: radial-gradient(ellipse at 50% 0, #f6cd5e 40%, #d99f2f);
+    border-radius: 0 0 50% 50% / 0 0 100% 100%;
+    box-shadow: inset 0 2px 0 rgba(255,255,255,.4);
+  }
+  .coop .nest .eggs { position: absolute; top: -5px; left: 0; right: 0; font-size: 12px; letter-spacing: -3px; text-shadow: 0 1px 1px rgba(0,0,0,.2); }
+  .coop .cname { font-size: 11px; font-weight: 800; color: #fff; margin-top: 6px; text-shadow: 0 1px 2px rgba(0,0,0,.35); }
+  .coop .timer { font-size: 10px; color: #ffe9b0; margin-top: 1px; font-variant-numeric: tabular-nums; font-weight: 700; }
   .coop .eggbadge {
-    position: absolute; top: -8px; right: -6px; background: #fff; border: 2px solid var(--gold);
+    position: absolute; top: -6px; right: -6px; z-index: 5; background: #fff; border: 2px solid var(--gold);
     border-radius: 999px; padding: 1px 7px; font-size: 12px; font-weight: 800; color: var(--ink);
     box-shadow: 0 2px 4px rgba(0,0,0,.15);
   }
-  .coop.ready { box-shadow: 0 0 0 3px var(--gold), 0 4px 0 var(--shadow); }
-  .coop.empty { background: rgba(255,255,255,.35); box-shadow: inset 0 0 0 3px rgba(255,255,255,.5); border: 3px dashed rgba(255,255,255,.7); }
-  .coop.empty .plus { font-size: 34px; color: rgba(255,255,255,.9); font-weight: 300; }
+  .coop.ready .house { box-shadow: 0 0 0 3px var(--gold), 0 4px 0 var(--shadow); }
+  /* empty build plot */
+  .coop.empty { justify-content: center; }
+  .coop.empty .plot {
+    min-height: 108px; border-radius: 14px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px;
+    background: rgba(255,255,255,.25); border: 3px dashed rgba(255,255,255,.7);
+  }
+  .coop.empty .plus { font-size: 34px; color: rgba(255,255,255,.95); font-weight: 300; line-height: 1; }
   .coop.empty .lbl { font-size: 10px; color: #fff; font-weight: 700; }
 
   .sectitle { color: #fff; font-weight: 800; font-size: 15px; margin: 18px 4px 8px; text-shadow: 0 2px 0 rgba(0,0,0,.15); }
@@ -158,6 +184,7 @@
       <div class="err" id="authErr"></div>
       <input id="uname" placeholder="Username" autocomplete="off" autocapitalize="off">
       <input id="pass" type="password" placeholder="Password" autocomplete="off">
+      <input id="refCode" placeholder="Referral code (optional)" autocomplete="off" autocapitalize="characters" style="display:none;text-transform:uppercase">
       <button class="buybtn" style="width:100%;padding:14px;font-size:16px" onclick="doAuth()">Let's Farm! 🥚</button>
     </div>
   </div>
@@ -184,9 +211,10 @@
   <!-- BOTTOM NAV -->
   <div class="nav">
     <button class="active" id="navFarm" onclick="showFarm()"><span class="ni">🌾</span>Farm</button>
-    <button onclick="openSheet('shop')"><span class="ni">🐣</span>Buy Chickens</button>
+    <button onclick="openSheet('shop')"><span class="ni">🐣</span>Chickens</button>
     <button onclick="openSheet('market')"><span class="ni">🏪</span>Market</button>
-    <button onclick="openSheet('coins')"><span class="ni">🪙</span>Get Coins</button>
+    <button onclick="openSheet('invite')"><span class="ni">🎁</span>Invite</button>
+    <button onclick="openSheet('coins')"><span class="ni">🪙</span>Coins</button>
   </div>
 
   <!-- SHEET -->

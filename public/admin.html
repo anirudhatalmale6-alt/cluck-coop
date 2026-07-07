@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cluck Coop — Admin</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:'Segoe UI',system-ui,sans-serif; }
+  body { background:#f4f6fb; color:#1e2233; padding:0; }
+  .top { background:linear-gradient(180deg,#b5763a,#8a5624); color:#fff; padding:16px 20px; display:flex; align-items:center; gap:10px; box-shadow:0 2px 8px rgba(0,0,0,.15); }
+  .top .logo { font-size:26px; }
+  .top h1 { font-size:18px; font-weight:800; }
+  .top .out { margin-left:auto; background:rgba(255,255,255,.2); border:none; color:#fff; padding:8px 14px; border-radius:8px; font-weight:700; cursor:pointer; }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px; }
+
+  /* login */
+  #login { max-width:360px; margin:80px auto; background:#fff; border-radius:16px; padding:28px; box-shadow:0 10px 30px rgba(0,0,0,.08); text-align:center; }
+  #login .logo { font-size:52px; }
+  #login h2 { margin:8px 0 20px; font-size:22px; }
+  #login input { width:100%; padding:13px 15px; border:2px solid #e2e6f0; border-radius:10px; font-size:16px; margin-bottom:12px; outline:none; }
+  #login input:focus { border-color:#b5763a; }
+  #login button { width:100%; padding:13px; border:none; border-radius:10px; background:linear-gradient(180deg,#b5763a,#8a5624); color:#fff; font-size:16px; font-weight:800; cursor:pointer; }
+  .err { color:#d1453b; font-size:13px; min-height:18px; margin-bottom:8px; font-weight:600; }
+
+  /* stat cards */
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:22px; }
+  .card { background:#fff; border-radius:14px; padding:18px; box-shadow:0 3px 12px rgba(0,0,0,.05); }
+  .card .n { font-size:28px; font-weight:800; color:#8a5624; }
+  .card .l { font-size:13px; color:#7a8099; margin-top:2px; font-weight:600; }
+
+  /* table */
+  .tablewrap { background:#fff; border-radius:14px; box-shadow:0 3px 12px rgba(0,0,0,.05); overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; min-width:720px; }
+  th, td { text-align:left; padding:11px 14px; font-size:14px; border-bottom:1px solid #eef0f6; white-space:nowrap; }
+  th { background:#faf7f2; color:#8a5624; font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.4px; }
+  tr:last-child td { border-bottom:none; }
+  td.coins { font-weight:800; color:#b8860b; }
+  .code { font-family:monospace; background:#f4f6fb; padding:2px 7px; border-radius:6px; font-weight:700; }
+  .muted { color:#aab; }
+  .refresh { background:#8a5624; color:#fff; border:none; padding:8px 16px; border-radius:8px; font-weight:700; cursor:pointer; margin-bottom:14px; }
+  .hint { font-size:12px; color:#8890a8; margin:10px 2px; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="logo">🐔</div>
+  <h2>Cluck Coop Admin</h2>
+  <div class="err" id="loginErr"></div>
+  <input id="pw" type="password" placeholder="Admin password" onkeydown="if(event.key==='Enter')login()">
+  <button onclick="login()">Log In</button>
+</div>
+
+<div id="panel" style="display:none">
+  <div class="top">
+    <span class="logo">🐔</span>
+    <h1>Cluck Coop — Admin Panel</h1>
+    <button class="out" onclick="logout()">Log Out</button>
+  </div>
+  <div class="wrap">
+    <button class="refresh" onclick="load()">⟳ Refresh</button>
+    <div class="cards" id="cards"></div>
+    <div class="hint">All registered players, newest first. Coins are in-game currency only.</div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>ID</th><th>Player</th><th>Coins</th><th>Chickens</th><th>Slots</th>
+          <th>Referral Code</th><th>Referred</th><th>Invited By</th><th>Joined</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API = (location.pathname.replace(/[^/]*$/, '')) + 'api/admin/';
+  let TOKEN = localStorage.getItem('cc_admin') || null;
+
+  async function apiCall(path, body) {
+    const res = await fetch(API + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type':'application/json', ...(TOKEN ? { Authorization:'Bearer '+TOKEN } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Error');
+    return data;
+  }
+
+  async function login() {
+    const pw = document.getElementById('pw').value;
+    const err = document.getElementById('loginErr');
+    err.textContent = '';
+    try {
+      const d = await apiCall('login', { password: pw });
+      TOKEN = d.token;
+      localStorage.setItem('cc_admin', TOKEN);
+      show();
+    } catch (e) { err.textContent = e.message; }
+  }
+
+  function logout() {
+    localStorage.removeItem('cc_admin');
+    TOKEN = null;
+    document.getElementById('panel').style.display = 'none';
+    document.getElementById('login').style.display = '';
+    document.getElementById('pw').value = '';
+  }
+
+  function fmtDate(ms) {
+    const d = new Date(ms);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function fmtNum(n){ return n.toLocaleString('en-US'); }
+
+  async function load() {
+    try {
+      const d = await apiCall('stats');
+      const t = d.totals;
+      document.getElementById('cards').innerHTML = `
+        <div class="card"><div class="n">${fmtNum(t.users)}</div><div class="l">Players</div></div>
+        <div class="card"><div class="n">${fmtNum(t.coins)}</div><div class="l">Total Coins</div></div>
+        <div class="card"><div class="n">${fmtNum(t.chickens)}</div><div class="l">Chickens Owned</div></div>
+        <div class="card"><div class="n">${fmtNum(t.referrals)}</div><div class="l">Referral Signups</div></div>`;
+      document.getElementById('rows').innerHTML = d.users.map(u => `
+        <tr>
+          <td class="muted">#${u.id}</td>
+          <td><b>${escapeHtml(u.username)}</b></td>
+          <td class="coins">${fmtNum(u.coins)}</td>
+          <td>${u.chickens}</td>
+          <td>${u.slots}</td>
+          <td><span class="code">${u.refCode || '—'}</span></td>
+          <td>${u.referrals}</td>
+          <td>${u.referredBy ? escapeHtml(u.referredBy) : '<span class="muted">—</span>'}</td>
+          <td class="muted">${fmtDate(u.joined)}</td>
+        </tr>`).join('');
+    } catch (e) {
+      if (String(e.message).match(/log in|admin/i)) logout();
+      else alert(e.message);
+    }
+  }
+
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  function show() {
+    document.getElementById('login').style.display = 'none';
+    document.getElementById('panel').style.display = '';
+    load();
+  }
+
+  if (TOKEN) show();
+</script>
+</body>
+</html>

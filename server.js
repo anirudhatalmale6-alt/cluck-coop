@@ -11,6 +11,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 const PORT = process.env.PORT || 3888;
 const JWT_SECRET = process.env.JWT_SECRET || 'chickenfarm-demo-secret-change-me';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'cluckadmin2026';
 
 // ---------- Database ----------
 const db = new Database(path.join(__dirname, 'farm.db'));
@@ -33,7 +34,30 @@ db.exec(`
   );
 `);
 
+// ---------- Migration: add referral columns to existing DBs ----------
+const userCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+if (!userCols.includes('ref_code')) db.exec("ALTER TABLE users ADD COLUMN ref_code TEXT");
+if (!userCols.includes('referred_by')) db.exec("ALTER TABLE users ADD COLUMN referred_by INTEGER");
+if (!userCols.includes('referrals')) db.exec("ALTER TABLE users ADD COLUMN referrals INTEGER NOT NULL DEFAULT 0");
+
 const now = () => Date.now();
+
+// Generate a short, human-friendly, unique referral code (no confusing chars like 0/O/1/I).
+function genRefCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  for (let attempt = 0; attempt < 50; attempt++) {
+    let code = '';
+    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    const taken = db.prepare('SELECT id FROM users WHERE ref_code = ?').get(code);
+    if (!taken) return code;
+  }
+  return 'C' + now().toString(36).toUpperCase().slice(-5);
+}
+
+// Backfill referral codes for any users created before this feature existed.
+db.prepare("SELECT id FROM users WHERE ref_code IS NULL OR ref_code = ''").all().forEach((u) => {
+  db.prepare('UPDATE users SET ref_code = ? WHERE id = ?').run(genRefCode(), u.id);
+});
 
 // ---------- Auth helpers ----------
 function makeToken(user) {
@@ -101,12 +125,20 @@ function getState(userId) {
     coinPacks: cfg.COIN_PACKS,
     layIntervalMs: cfg.LAY_INTERVAL_MS,
     maxEggsPerChicken: cfg.MAX_EGGS_PER_CHICKEN,
+    referral: {
+      code: user.ref_code,
+      count: user.referrals || 0,
+      earned: (user.referrals || 0) * cfg.REFERRAL_BONUS_REFERRER,
+      rewardReferrer: cfg.REFERRAL_BONUS_REFERRER,
+      rewardNew: cfg.REFERRAL_BONUS_NEW,
+    },
   };
 }
 
 // ---------- Routes ----------
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body || {};
+  const refCode = (req.body && req.body.refCode ? String(req.body.refCode) : '').trim().toUpperCase();
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   if (username.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
   if (password.length < 4) return res.status(400).json({ error: 'Password must be at least 4 characters' });
@@ -114,15 +146,33 @@ app.post('/api/register', (req, res) => {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (exists) return res.status(400).json({ error: 'Username already taken' });
 
-  const hash = bcrypt.hashSync(password, 10);
-  const info = db.prepare('INSERT INTO users (username, password, coins, slots, eggs, created_at) VALUES (?,?,?,?,?,?)')
-    .run(username, hash, cfg.STARTING_COINS, cfg.BASE_SLOTS, '{}', now());
-  // Free starter chicken
-  db.prepare('INSERT INTO chickens (user_id, breed, last_collected) VALUES (?,?,?)')
-    .run(info.lastInsertRowid, cfg.STARTING_CHICKEN, now());
+  // If a referral code was entered, it must be valid.
+  let referrer = null;
+  if (refCode) {
+    referrer = db.prepare('SELECT * FROM users WHERE ref_code = ?').get(refCode);
+    if (!referrer) return res.status(400).json({ error: 'Invalid referral code' });
+  }
 
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-  res.json({ token: makeToken(user), state: getState(user.id) });
+  const hash = bcrypt.hashSync(password, 10);
+  const startCoins = cfg.STARTING_COINS + (referrer ? cfg.REFERRAL_BONUS_NEW : 0);
+  const myCode = genRefCode();
+
+  const tx = db.transaction(() => {
+    const info = db.prepare('INSERT INTO users (username, password, coins, slots, eggs, created_at, ref_code, referred_by) VALUES (?,?,?,?,?,?,?,?)')
+      .run(username, hash, startCoins, cfg.BASE_SLOTS, '{}', now(), myCode, referrer ? referrer.id : null);
+    // Free starter chicken
+    db.prepare('INSERT INTO chickens (user_id, breed, last_collected) VALUES (?,?,?)')
+      .run(info.lastInsertRowid, cfg.STARTING_CHICKEN, now());
+    if (referrer) {
+      db.prepare('UPDATE users SET coins = coins + ?, referrals = referrals + 1 WHERE id = ?')
+        .run(cfg.REFERRAL_BONUS_REFERRER, referrer.id);
+    }
+    return info.lastInsertRowid;
+  });
+  const newId = tx();
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(newId);
+  res.json({ token: makeToken(user), state: getState(user.id), referralApplied: !!referrer });
 });
 
 app.post('/api/login', (req, res) => {
@@ -237,6 +287,60 @@ app.post('/api/buy-coins', auth, (req, res) => {
   const total = pack.coins + pack.bonus;
   db.prepare('UPDATE users SET coins = coins + ? WHERE id = ?').run(total, userId);
   res.json({ credited: total, state: getState(userId) });
+});
+
+// ---------- Admin ----------
+function adminAuth(req, res, next) {
+  const h = req.headers.authorization || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Not logged in' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload.admin) return res.status(403).json({ error: 'Not an admin' });
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Session expired, please log in again' });
+  }
+}
+
+app.post('/api/admin/login', (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== ADMIN_PASSWORD) {
+    return res.status(400).json({ error: 'Wrong admin password' });
+  }
+  const token = jwt.sign({ admin: true }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token });
+});
+
+app.get('/api/admin/stats', adminAuth, (req, res) => {
+  const users = db.prepare('SELECT * FROM users ORDER BY id DESC').all();
+  const chickenCounts = {};
+  db.prepare('SELECT user_id, COUNT(*) c FROM chickens GROUP BY user_id').all()
+    .forEach((r) => { chickenCounts[r.user_id] = r.c; });
+
+  const nameById = {};
+  users.forEach((u) => { nameById[u.id] = u.username; });
+
+  const rows = users.map((u) => ({
+    id: u.id,
+    username: u.username,
+    coins: u.coins,
+    slots: u.slots,
+    chickens: chickenCounts[u.id] || 0,
+    refCode: u.ref_code,
+    referrals: u.referrals || 0,
+    referredBy: u.referred_by ? (nameById[u.referred_by] || ('#' + u.referred_by)) : null,
+    joined: u.created_at,
+  }));
+
+  const totals = {
+    users: users.length,
+    coins: users.reduce((a, u) => a + u.coins, 0),
+    chickens: db.prepare('SELECT COUNT(*) c FROM chickens').get().c,
+    referrals: users.reduce((a, u) => a + (u.referrals || 0), 0),
+  };
+
+  res.json({ totals, users: rows });
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));

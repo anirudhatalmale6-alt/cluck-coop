@@ -37,6 +37,12 @@ const BASE_SLOTS = 6;
 const MAX_SLOTS = 40;
 const slotPrice = (currentSlots) => Math.round(500 * Math.pow(1.35, currentSlots - BASE_SLOTS));
 
+// Referral rewards. When a new player signs up with someone's code:
+//  - the new player gets REFERRAL_BONUS_NEW extra coins
+//  - the referrer gets REFERRAL_BONUS_REFERRER coins added to their farm
+const REFERRAL_BONUS_NEW = 300;
+const REFERRAL_BONUS_REFERRER = 500;
+
 module.exports = {
   LAY_INTERVAL_MS,
   MAX_EGGS_PER_CHICKEN,
@@ -47,4 +53,6 @@ module.exports = {
   BASE_SLOTS,
   MAX_SLOTS,
   slotPrice,
+  REFERRAL_BONUS_NEW,
+  REFERRAL_BONUS_REFERRER,
 };
