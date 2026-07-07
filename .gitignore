@@ -1,0 +1,5 @@
+node_modules/
+farm.db
+farm.db-shm
+farm.db-wal
+*.log
