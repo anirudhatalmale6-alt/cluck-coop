@@ -69,6 +69,9 @@ function toast(msg) {
 }
 
 // ---------- Formatting ----------
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 function fmt(n) {
   n = Math.floor(n);
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -116,6 +119,7 @@ function render() {
       </div>
       <div class="cname">${c.name}</div>
       <div class="timer" data-next="${c.nextEggMs}" data-full="${c.full}">${c.full ? 'Full!' : clock(c.nextEggMs)}</div>
+      ${c.pending > 0 ? `<button class="claim" onclick="claimChicken(${c.id})">🧺 Claim ${c.pending}</button>` : ''}
     `;
     grid.appendChild(el);
   });
@@ -156,6 +160,16 @@ async function collectAll() {
     STATE = d.state;
     if (d.collected > 0) toast(`🥚 Collected ${d.collected} eggs!`);
     else toast('No eggs ready yet - check back soon!');
+    render();
+  } catch (e) { toast(e.message); }
+}
+
+async function claimChicken(chickenId) {
+  try {
+    const d = await api('collect', { chickenId });
+    STATE = d.state;
+    if (d.collected > 0) toast(`🥚 Claimed ${d.collected} egg${d.collected > 1 ? 's' : ''}!`);
+    else toast('Not ready yet - check the timer!');
     render();
   } catch (e) { toast(e.message); }
 }
@@ -233,18 +247,24 @@ function renderSheet(which) {
   let html = `<button class="close" onclick="closeSheet()">✕</button>`;
 
   if (which === 'shop') {
+    const free = STATE.freeChickens;
+    const hrs = Math.round((STATE.layIntervalMs || 10800000) / 3600000);
     html += `<h2>🐣 Buy Chickens</h2>`;
+    if (free) html += `<p style="text-align:center;color:#42a91f;font-size:13px;font-weight:700;margin-bottom:4px">🎉 Chickens are FREE right now — grab one to start!</p>`;
     Object.values(STATE.breeds).forEach((b) => {
-      const afford = STATE.coins >= b.price;
       const full = STATE.usedSlots >= STATE.slots;
+      const afford = free || STATE.coins >= b.price;
+      const label = free
+        ? `Free <s style="opacity:.6;font-weight:600">🪙${fmt(b.price)}</s>`
+        : `🪙 ${fmt(b.price)}`;
       html += `
         <div class="shop-item">
           <div class="big">${b.emoji}</div>
           <div class="info">
             <div class="t">${b.name}</div>
-            <div class="d">Lays ${b.eggEmoji} worth ${fmt(b.eggValue)} coins each</div>
+            <div class="d">Lays ${b.eggEmoji} worth ${fmt(b.eggValue)} coins, every ${hrs}h</div>
           </div>
-          <button class="buybtn ${afford && !full ? '' : 'dim'}" onclick="buyChicken('${b.id}')">🪙 ${fmt(b.price)}</button>
+          <button class="buybtn ${afford && !full ? '' : 'dim'}" onclick="buyChicken('${b.id}')">${label}</button>
         </div>`;
     });
     // Expand farm
@@ -282,27 +302,56 @@ function renderSheet(which) {
     else html += `<div style="margin-top:14px"><button class="buybtn" style="width:100%;padding:14px" onclick="sellEggs()">💰 Sell Everything</button></div>`;
   }
 
-  else if (which === 'invite') {
+  else if (which === 'profile') {
     const r = STATE.referral || {};
-    html += `<h2>🎁 Invite Friends</h2>
-      <p style="text-align:center;color:#8a7550;font-size:13px;margin-bottom:12px">
-        Share your code. When a friend signs up with it, you get 🪙 ${fmt(r.rewardReferrer)} and they get 🪙 ${fmt(r.rewardNew)}!
-      </p>
-      <div style="background:#fff;border-radius:16px;padding:16px;box-shadow:0 3px 0 var(--shadow);text-align:center">
-        <div style="font-size:12px;color:#8a7550;font-weight:700">YOUR REFERRAL CODE</div>
+    const per = r.perFreeChicken || 10;
+    const toward = r.towardNext || 0;
+    const need = r.needForNext != null ? r.needForNext : per;
+    const pct = Math.round((toward / per) * 100);
+    const docBase = location.pathname.replace(/[^/]*$/, '');
+    const stat = (val, label, color) => `
+      <div style="flex:1;background:#fff;border-radius:14px;padding:14px 8px;text-align:center;box-shadow:0 3px 0 var(--shadow)">
+        <div style="font-size:23px;font-weight:800;color:${color}">${val}</div>
+        <div style="font-size:11px;color:#8a7550;font-weight:700">${label}</div>
+      </div>`;
+
+    html += `<h2>👤 My Profile</h2>
+      <div style="text-align:center;margin:2px 0 14px">
+        <div style="font-size:44px">🧑‍🌾</div>
+        <div style="font-size:20px;font-weight:800;color:#5e3a1c">${escapeHtml(STATE.username)}</div>
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        ${stat('🪙 ' + fmt(STATE.coins), 'Coins', '#b8860b')}
+        ${stat('🐔 ' + STATE.usedSlots, 'Chickens', '#42a91f')}
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        ${stat(r.count || 0, 'Friends Joined', '#3a86ff')}
+        ${stat('🐣 ' + (r.freeChickens || 0), 'Free Chickens Won', '#8a5624')}
+      </div>
+
+      <div style="background:#fff;border-radius:16px;padding:16px;box-shadow:0 3px 0 var(--shadow);text-align:center;margin-bottom:12px">
+        <div style="font-size:12px;color:#8a7550;font-weight:700">MY REFERRAL CODE</div>
         <div style="font-size:30px;font-weight:800;letter-spacing:3px;color:#8a5624;margin:6px 0;font-family:monospace">${r.code || '—'}</div>
         <button class="buybtn" style="width:100%;padding:12px" onclick="shareRef('${r.code || ''}')">📤 Share / Copy Code</button>
+        <div style="font-size:12px;color:#8a7550;margin-top:10px;line-height:1.5">
+          Friends who join with your code + buy a chicken earn you rewards.<br>
+          Every <b>${per}</b> = <b>1 free chicken</b> 🐔
+        </div>
+        <div style="background:#f1e6cd;border-radius:999px;height:12px;margin-top:10px;overflow:hidden">
+          <div style="background:linear-gradient(90deg,#7ed957,#42a91f);height:100%;width:${pct}%"></div>
+        </div>
+        <div style="font-size:11px;color:#8a7550;font-weight:700;margin-top:5px">
+          ${toward}/${per} bought a chicken — ${need} more for your next free chicken
+        </div>
       </div>
-      <div style="display:flex;gap:10px;margin-top:12px">
-        <div style="flex:1;background:#fff;border-radius:14px;padding:14px;text-align:center;box-shadow:0 3px 0 var(--shadow)">
-          <div style="font-size:24px;font-weight:800;color:#42a91f">${r.count || 0}</div>
-          <div style="font-size:11px;color:#8a7550;font-weight:700">Friends Joined</div>
+
+      <a href="${docBase}how.html" target="_blank" style="display:block;text-decoration:none">
+        <div class="shop-item" style="margin-top:0">
+          <div class="big">📖</div>
+          <div class="info"><div class="t">How It Works</div><div class="d">Read the full guide</div></div>
+          <button class="buybtn gold">Open</button>
         </div>
-        <div style="flex:1;background:#fff;border-radius:14px;padding:14px;text-align:center;box-shadow:0 3px 0 var(--shadow)">
-          <div style="font-size:24px;font-weight:800;color:#b8860b">${fmt(r.earned || 0)}</div>
-          <div style="font-size:11px;color:#8a7550;font-weight:700">Coins Earned</div>
-        </div>
-      </div>`;
+      </a>`;
   }
 
   else if (which === 'coins') {

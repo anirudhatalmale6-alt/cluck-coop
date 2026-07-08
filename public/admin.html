@@ -65,7 +65,8 @@
       <table>
         <thead><tr>
           <th>ID</th><th>Player</th><th>Coins</th><th>Chickens</th><th>Slots</th>
-          <th>Referral Code</th><th>Referred</th><th>Invited By</th><th>Joined</th>
+          <th>Referral Code</th><th>Joined via Code</th><th>Bought Chicken</th>
+          <th>Free Chickens</th><th>Invited By</th><th>Joined</th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -132,6 +133,8 @@
           <td>${u.slots}</td>
           <td><span class="code">${u.refCode || '—'}</span></td>
           <td>${u.referrals}</td>
+          <td>${u.qualified || 0}</td>
+          <td>🐔 ${u.freeChickens || 0}</td>
           <td>${u.referredBy ? escapeHtml(u.referredBy) : '<span class="muted">—</span>'}</td>
           <td class="muted">${fmtDate(u.joined)}</td>
         </tr>`).join('');

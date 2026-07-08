@@ -107,6 +107,15 @@
     box-shadow: 0 2px 4px rgba(0,0,0,.15);
   }
   .coop.ready .house { box-shadow: 0 0 0 3px var(--gold), 0 4px 0 var(--shadow); }
+  /* per-chicken Claim button (shows when eggs are ready) */
+  .coop .claim {
+    margin-top: 6px; border: none; border-radius: 11px; padding: 7px 0; width: 100%;
+    font-weight: 800; font-size: 12px; color: #5a3d00; cursor: pointer;
+    background: linear-gradient(180deg,#ffd95e,#f5b301); box-shadow: 0 3px 0 #b8860b;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .coop .claim:active { transform: translateY(2px); box-shadow: 0 1px 0 #b8860b; }
+  @keyframes pulse { 0%,100%{ transform: scale(1);} 50%{ transform: scale(1.04);} }
   /* empty build plot */
   .coop.empty { justify-content: center; }
   .coop.empty .plot {
@@ -213,7 +222,7 @@
     <button class="active" id="navFarm" onclick="showFarm()"><span class="ni">🌾</span>Farm</button>
     <button onclick="openSheet('shop')"><span class="ni">🐣</span>Chickens</button>
     <button onclick="openSheet('market')"><span class="ni">🏪</span>Market</button>
-    <button onclick="openSheet('invite')"><span class="ni">🎁</span>Invite</button>
+    <button onclick="openSheet('profile')"><span class="ni">👤</span>Profile</button>
     <button onclick="openSheet('coins')"><span class="ni">🪙</span>Coins</button>
   </div>
 

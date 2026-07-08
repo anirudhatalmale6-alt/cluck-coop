@@ -14,7 +14,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'chickenfarm-demo-secret-change-me'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'cluckadmin2026';
 
 // ---------- Database ----------
-const db = new Database(path.join(__dirname, 'farm.db'));
+const db = new Database(process.env.DB_PATH || path.join(__dirname, 'farm.db'));
 db.pragma('journal_mode = WAL');
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -34,11 +34,15 @@ db.exec(`
   );
 `);
 
-// ---------- Migration: add referral columns to existing DBs ----------
-const userCols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
-if (!userCols.includes('ref_code')) db.exec("ALTER TABLE users ADD COLUMN ref_code TEXT");
-if (!userCols.includes('referred_by')) db.exec("ALTER TABLE users ADD COLUMN referred_by INTEGER");
-if (!userCols.includes('referrals')) db.exec("ALTER TABLE users ADD COLUMN referrals INTEGER NOT NULL DEFAULT 0");
+// ---------- Migration: add columns to existing DBs (safe/idempotent) ----------
+const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+const addCol = (name, decl) => { if (!userCols.includes(name)) db.exec(`ALTER TABLE users ADD COLUMN ${name} ${decl}`); };
+addCol('ref_code', 'TEXT');
+addCol('referred_by', 'INTEGER');
+addCol('referrals', 'INTEGER NOT NULL DEFAULT 0');            // friends who signed up with my code
+addCol('qualified_referrals', 'INTEGER NOT NULL DEFAULT 0');  // of those, how many bought a chicken
+addCol('free_chickens_earned', 'INTEGER NOT NULL DEFAULT 0'); // milestone free chickens already granted
+addCol('bought_chicken', 'INTEGER NOT NULL DEFAULT 0');       // has this user ever bought a chicken
 
 const now = () => Date.now();
 
@@ -80,25 +84,26 @@ function auth(req, res, next) {
 function pendingEggs(chicken) {
   const elapsed = now() - chicken.last_collected;
   const laid = Math.floor(elapsed / cfg.LAY_INTERVAL_MS);
-  return Math.min(laid, cfg.MAX_EGGS_PER_CHICKEN);
+  return Math.max(0, Math.min(laid, cfg.MAX_EGGS_PER_CHICKEN));
 }
 
 function getState(userId) {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!user) return null;
-  const chickens = db.prepare('SELECT * FROM chickens WHERE user_id = ?').all(userId);
+  const chickens = db.prepare('SELECT * FROM chickens WHERE user_id = ? ORDER BY id').all(userId);
   const eggInv = JSON.parse(user.eggs || '{}');
 
   const chickenState = chickens.map((c) => {
-    const breed = cfg.BREEDS[c.breed];
+    const breed = cfg.resolveBreed(c.breed);
     const pending = pendingEggs(c);
     const nextMs = cfg.LAY_INTERVAL_MS - ((now() - c.last_collected) % cfg.LAY_INTERVAL_MS);
     return {
       id: c.id,
-      breed: c.breed,
+      breed: breed.id,
       name: breed.name,
       emoji: breed.emoji,
       eggEmoji: breed.eggEmoji,
+      eggValue: breed.eggValue,
       pending,
       full: pending >= cfg.MAX_EGGS_PER_CHICKEN,
       nextEggMs: pending >= cfg.MAX_EGGS_PER_CHICKEN ? 0 : nextMs,
@@ -108,9 +113,12 @@ function getState(userId) {
   // Total uncollected eggs by type (for the "collect all" button)
   const uncollected = {};
   chickens.forEach((c) => {
-    const breed = cfg.BREEDS[c.breed];
+    const breed = cfg.resolveBreed(c.breed);
     uncollected[breed.eggType] = (uncollected[breed.eggType] || 0) + pendingEggs(c);
   });
+
+  const qualified = user.qualified_referrals || 0;
+  const per = cfg.REFERRALS_PER_FREE_CHICKEN;
 
   return {
     username: user.username,
@@ -125,10 +133,17 @@ function getState(userId) {
     coinPacks: cfg.COIN_PACKS,
     layIntervalMs: cfg.LAY_INTERVAL_MS,
     maxEggsPerChicken: cfg.MAX_EGGS_PER_CHICKEN,
+    freeChickens: cfg.DEMO_FREE_CHICKENS,
+    joined: user.created_at,
     referral: {
       code: user.ref_code,
-      count: user.referrals || 0,
-      earned: (user.referrals || 0) * cfg.REFERRAL_BONUS_REFERRER,
+      count: user.referrals || 0,                 // friends signed up
+      qualified,                                  // of those, bought a chicken
+      earnedCoins: (user.referrals || 0) * cfg.REFERRAL_BONUS_REFERRER,
+      freeChickens: user.free_chickens_earned || 0,
+      perFreeChicken: per,
+      towardNext: qualified % per,                // progress in current bracket
+      needForNext: per - (qualified % per),       // referrals still needed
       rewardReferrer: cfg.REFERRAL_BONUS_REFERRER,
       rewardNew: cfg.REFERRAL_BONUS_NEW,
     },
@@ -158,11 +173,9 @@ app.post('/api/register', (req, res) => {
   const myCode = genRefCode();
 
   const tx = db.transaction(() => {
+    // No free starter chicken — the player buys one right after registering.
     const info = db.prepare('INSERT INTO users (username, password, coins, slots, eggs, created_at, ref_code, referred_by) VALUES (?,?,?,?,?,?,?,?)')
       .run(username, hash, startCoins, cfg.BASE_SLOTS, '{}', now(), myCode, referrer ? referrer.id : null);
-    // Free starter chicken
-    db.prepare('INSERT INTO chickens (user_id, breed, last_collected) VALUES (?,?,?)')
-      .run(info.lastInsertRowid, cfg.STARTING_CHICKEN, now());
     if (referrer) {
       db.prepare('UPDATE users SET coins = coins + ?, referrals = referrals + 1 WHERE id = ?')
         .run(cfg.REFERRAL_BONUS_REFERRER, referrer.id);
@@ -190,11 +203,15 @@ app.get('/api/state', auth, (req, res) => {
   res.json({ state });
 });
 
-// Collect all pending eggs into the player's inventory.
+// Collect eggs. With no body → collect from ALL chickens ("Collect All").
+// With { chickenId } → claim just that one chicken (the per-chicken Claim button).
 app.post('/api/collect', auth, (req, res) => {
   const userId = req.user.id;
+  const chickenId = req.body && req.body.chickenId ? Number(req.body.chickenId) : null;
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  const chickens = db.prepare('SELECT * FROM chickens WHERE user_id = ?').all(userId);
+  const chickens = chickenId
+    ? db.prepare('SELECT * FROM chickens WHERE user_id = ? AND id = ?').all(userId, chickenId)
+    : db.prepare('SELECT * FROM chickens WHERE user_id = ?').all(userId);
   const eggInv = JSON.parse(user.eggs || '{}');
   let collected = 0;
 
@@ -202,7 +219,7 @@ app.post('/api/collect', auth, (req, res) => {
     for (const c of chickens) {
       const p = pendingEggs(c);
       if (p <= 0) continue;
-      const breed = cfg.BREEDS[c.breed];
+      const breed = cfg.resolveBreed(c.breed);
       eggInv[breed.eggType] = (eggInv[breed.eggType] || 0) + p;
       collected += p;
       // Advance the timer by exactly the eggs collected, preserving partial progress.
@@ -223,7 +240,7 @@ app.post('/api/sell', auth, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   const eggInv = JSON.parse(user.eggs || '{}');
 
-  // Build a lookup of eggType -> value
+  // Build a lookup of eggType -> value (include legacy types via resolveBreed).
   const valueByType = {};
   Object.values(cfg.BREEDS).forEach((b) => { valueByType[b.eggType] = b.eggValue; });
 
@@ -231,10 +248,11 @@ app.post('/api/sell', auth, (req, res) => {
   const typesToSell = eggType ? [eggType] : Object.keys(eggInv);
   for (const t of typesToSell) {
     const count = eggInv[t] || 0;
-    if (count > 0 && valueByType[t]) {
-      earned += count * valueByType[t];
-      eggInv[t] = 0;
-    }
+    if (count <= 0) continue;
+    // Legacy egg types (white/silver/diamond) map onto a current value.
+    const val = valueByType[t] != null ? valueByType[t] : cfg.resolveBreed(t).eggValue;
+    earned += count * val;
+    eggInv[t] = 0;
   }
 
   db.prepare('UPDATE users SET coins = coins + ?, eggs = ? WHERE id = ?')
@@ -243,7 +261,20 @@ app.post('/api/sell', auth, (req, res) => {
   res.json({ earned, state: getState(userId) });
 });
 
-// Buy a chicken of a given breed.
+// Give a chicken to `referrerId` for a milestone reward, expanding their farm if full.
+function grantFreeChicken(referrerId) {
+  const ref = db.prepare('SELECT * FROM users WHERE id = ?').get(referrerId);
+  const count = db.prepare('SELECT COUNT(*) c FROM chickens WHERE user_id = ?').get(referrerId).c;
+  if (count >= ref.slots) {
+    // Make room so the reward always lands.
+    db.prepare('UPDATE users SET slots = slots + 1 WHERE id = ?').run(referrerId);
+  }
+  db.prepare('INSERT INTO chickens (user_id, breed, last_collected) VALUES (?,?,?)')
+    .run(referrerId, cfg.FREE_CHICKEN_BREED, now());
+  db.prepare('UPDATE users SET free_chickens_earned = free_chickens_earned + 1 WHERE id = ?').run(referrerId);
+}
+
+// Buy a chicken of a given breed. FREE for now (DEMO_FREE_CHICKENS).
 app.post('/api/buy-chicken', auth, (req, res) => {
   const userId = req.user.id;
   const { breed } = req.body || {};
@@ -253,12 +284,25 @@ app.post('/api/buy-chicken', auth, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   const count = db.prepare('SELECT COUNT(*) c FROM chickens WHERE user_id = ?').get(userId).c;
   if (count >= user.slots) return res.status(400).json({ error: 'No free chicken slots - buy more space first' });
-  if (user.coins < b.price) return res.status(400).json({ error: 'Not enough coins' });
+
+  const price = cfg.DEMO_FREE_CHICKENS ? 0 : b.price;
+  if (user.coins < price) return res.status(400).json({ error: 'Not enough coins' });
 
   const tx = db.transaction(() => {
-    db.prepare('UPDATE users SET coins = coins - ? WHERE id = ?').run(b.price, userId);
+    if (price > 0) db.prepare('UPDATE users SET coins = coins - ? WHERE id = ?').run(price, userId);
     db.prepare('INSERT INTO chickens (user_id, breed, last_collected) VALUES (?,?,?)')
       .run(userId, breed, now());
+
+    // First-ever purchase: this player now counts toward their referrer's milestone.
+    if (!user.bought_chicken) {
+      db.prepare('UPDATE users SET bought_chicken = 1 WHERE id = ?').run(userId);
+      if (user.referred_by) {
+        db.prepare('UPDATE users SET qualified_referrals = qualified_referrals + 1 WHERE id = ?').run(user.referred_by);
+        const ref = db.prepare('SELECT qualified_referrals, free_chickens_earned FROM users WHERE id = ?').get(user.referred_by);
+        const owed = Math.floor(ref.qualified_referrals / cfg.REFERRALS_PER_FREE_CHICKEN) - ref.free_chickens_earned;
+        for (let i = 0; i < owed; i++) grantFreeChicken(user.referred_by);
+      }
+    }
   });
   tx();
 
@@ -329,6 +373,8 @@ app.get('/api/admin/stats', adminAuth, (req, res) => {
     chickens: chickenCounts[u.id] || 0,
     refCode: u.ref_code,
     referrals: u.referrals || 0,
+    qualified: u.qualified_referrals || 0,
+    freeChickens: u.free_chickens_earned || 0,
     referredBy: u.referred_by ? (nameById[u.referred_by] || ('#' + u.referred_by)) : null,
     joined: u.created_at,
   }));
