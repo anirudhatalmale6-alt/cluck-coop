@@ -1,11 +1,10 @@
 {
-  "name": "project",
+  "name": "chicken-farm",
   "version": "1.0.0",
   "description": "Idle chicken farm game - raise chickens, collect eggs, grow your farm",
   "main": "server.js",
   "scripts": {
-    "build": "node canary.js && tsc",
-    "prepare": "node canary.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
